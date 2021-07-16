@@ -66,6 +66,26 @@ def cal_loss(deeplab_model, images, labels):
 
     return loss
 
+def compute_miou(actual, pred):
+    a = actual
+    a = a.reshape((FLAGS.img_size * FLAGS.img_size,))
+    a_count = np.bincount(a, weights = None, minlength = FLAGS.n_classes - 1) # A
+    
+    b = pred
+    b = b.reshape((FLAGS.img_size * FLAGS.img_size,))
+    b_count = np.bincount(b, weights = None, minlength = FLAGS.n_classes - 1) # B
+    
+    c = (a * (FLAGS.n_classes - 1)) + b   # category
+    cm = np.bincount(c, weights = None, minlength = (FLAGS.n_classes - 1) * (FLAGS.n_classes - 1))
+    cm = cm.reshape((FLAGS.n_classes - 1, FLAGS.n_classes - 1))
+    
+    Nr = np.diag(cm) # A ⋂ B
+    Dr = a_count + b_count - Nr # A ⋃ B
+    individual_iou = Nr/Dr
+    miou = np.nanmean(individual_iou)
+    
+    return miou
+
 def main():
     
     deeplab_model = Deeplabv3(input_shape=(256, 256, 3), classes=FLAGS.n_classes-1)  # Deeplab V3 plus model
@@ -103,7 +123,9 @@ def main():
 
         it = iter(gener)
         idx = len(tr_img_buf) // FLAGS.batch_size
-        for i in range(idx):
+
+        total_miou = 0.
+        for step in range(idx):
             images, labels = next(it)
 
             labels_np = labels.numpy()
@@ -114,8 +136,27 @@ def main():
 
             loss = cal_loss(deeplab_model, images, labels)
 
+            tmp_miou = 0.
+            for i in range(FLAGS.batch_size):
+                predict = deeplab_model(tf.expand_dims(images[i], 0), False)
+                #predict = deeplab_model.predict(tf.expand_dims(images[0], 0))
+                predict = tf.argmax(tf.nn.softmax(predict, -1), -1)
+                predict = tf.squeeze(predict, 0)
+                predict = np.array(predict.numpy())
+
+                grounnd_mask = tf.argmax(labels[i], -1)
+                grounnd_mask = np.array(grounnd_mask.numpy()).astype("uint8")
+
+                tmp_miou += compute_miou(grounnd_mask, predict)
+
+            total_miou += tmp_miou
+            
+
             if count % 10 == 0:
-                print(loss)
+                print("Epoch = {}[{}/{}] loss = {}".format(epoch, step+1, idx, loss))
+                print("( [{}/{}] images's miou = {} )".format((step + 1) * FLAGS.batch_size, 
+                                                               idx * FLAGS.batch_size, 
+                                                               total_miou / ((step + 1) * FLAGS.batch_size)))
 
             if count % 100 == 0:
                 output = deeplab_model.predict(tf.expand_dims(images[0], 0))
@@ -131,10 +172,9 @@ def main():
                 plt.imsave("C:/Users/Yuhwan/Pictures/img/predict_{}.png".format(count),pred_mask_color)
                 plt.imsave("C:/Users/Yuhwan/Pictures/img/grounnd_mask_{}.png".format(count),grounnd_mask)
 
-                
-                
-
             count += 1
+
+        total_miou /= len(tr_img_buf)
 
 
 if __name__ == "__main__":
