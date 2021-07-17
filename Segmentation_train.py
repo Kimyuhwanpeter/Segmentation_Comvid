@@ -1,5 +1,6 @@
 # -*- coding:utf-8 -*-
 from Seg_model import *
+from SEg_model_2 import *
 from PIL import Image
 
 import matplotlib.pyplot as plt
@@ -23,9 +24,9 @@ FLAGS = easydict.EasyDict({"img_size": 256,
                            
                            "train": True,
                            
-                           "tr_img_path": "D:/[1]DB/[3]detection_DB/CamSeq01",
+                           "tr_img_path": "D:/[1]DB/[3]detection_DB/camvid/CamVid/train",
                            
-                           "tr_lab_path": "D:/[1]DB/[3]detection_DB/CamSeq01",
+                           "tr_lab_path": "D:/[1]DB/[3]detection_DB/camvid/CamVid/train_labels",
 
                            "txt_label": "D:/[1]DB/[3]detection_DB/comvid_txt/label_colors.txt",
                            
@@ -69,15 +70,18 @@ def cal_loss(deeplab_model, images, labels):
 def compute_miou(actual, pred):
     a = actual
     a = a.reshape((FLAGS.img_size * FLAGS.img_size,))
-    a_count = np.bincount(a, weights = None, minlength = FLAGS.n_classes - 1) # A
+    a_count = np.bincount(a, weights = None, minlength = FLAGS.n_classes) # A
     
     b = pred
     b = b.reshape((FLAGS.img_size * FLAGS.img_size,))
-    b_count = np.bincount(b, weights = None, minlength = FLAGS.n_classes - 1) # B
+    b_count = np.bincount(b, weights = None, minlength = FLAGS.n_classes) # B
     
-    c = (a * (FLAGS.n_classes - 1)) + b   # category
-    cm = np.bincount(c, weights = None, minlength = (FLAGS.n_classes - 1) * (FLAGS.n_classes - 1))
-    cm = cm.reshape((FLAGS.n_classes - 1, FLAGS.n_classes - 1))
+    c = (a * (FLAGS.n_classes)) + b   # category
+    cm = np.bincount(c, weights = None, minlength = (FLAGS.n_classes) * (FLAGS.n_classes))
+    cm = cm.reshape((FLAGS.n_classes, FLAGS.n_classes))
+    #m = tf.metrics.MeanIoU(FLAGS.n_classes) # 내일 다시!
+    #m = m.update_state(actual, pred)
+    #cm = m.numpy()
     
     Nr = np.diag(cm) # A ⋂ B
     Dr = a_count + b_count - Nr # A ⋃ B
@@ -87,23 +91,16 @@ def compute_miou(actual, pred):
     return miou
 
 def main():
-    
-    deeplab_model = Deeplabv3(input_shape=(256, 256, 3), classes=FLAGS.n_classes-1)  # Deeplab V3 plus model
+    #deeplab_model = unet_model(FLAGS.n_classes)
+    deeplab_model = Deeplabv3(input_shape=(256, 256, 3), classes=FLAGS.n_classes)  # Deeplab V3 plus model
     deeplab_model.summary()
 
     tr_images = os.listdir(FLAGS.tr_img_path)
+    tr_images = [FLAGS.tr_img_path + "/" + data for data in tr_images]
     tr_labels = os.listdir(FLAGS.tr_lab_path)
-    tr_img_buf = []
-    tr_lab_buf = []
-    for i in range(len(tr_images)):
-        if len(tr_images[i].split('_')) == 3:
-            tr_lab_buf.append(tr_images[i])
-        else:
-            tr_img_buf.append(tr_images[i])
-    tr_lab_buf = [FLAGS.tr_img_path + "/" + data for data in tr_lab_buf]
-    tr_img_buf = [FLAGS.tr_img_path + "/" + data for data in tr_img_buf]
-    tr_lab_buf = np.array(tr_lab_buf)
-    tr_img_buf = np.array(tr_img_buf)
+    tr_labels = [FLAGS.tr_lab_path + "/" + data for data in tr_labels]
+    tr_lab_buf = np.array(tr_labels)
+    tr_img_buf = np.array(tr_images)
 
     txt_labels = np.loadtxt(FLAGS.txt_label, dtype=np.int32, skiprows=0, usecols=[0, 1, 2])
     txt_names = np.loadtxt(FLAGS.txt_label, dtype=np.str, skiprows=0, usecols=3)
@@ -125,6 +122,9 @@ def main():
         idx = len(tr_img_buf) // FLAGS.batch_size
 
         total_miou = 0.
+        a_count = 0
+        b_count = 0
+        cm = 0
         for step in range(idx):
             images, labels = next(it)
 
@@ -132,9 +132,12 @@ def main():
             index = (labels_np[:, :, :, 0] * 256 + labels_np[:, :, :, 1]) * 256 + labels_np[:, :, :, 2]
             labels = color_to_label[index]
             not_one_hot_labels = labels
-            labels = tf.one_hot(labels, FLAGS.n_classes - 1)
+            labels = tf.one_hot(labels, FLAGS.n_classes)
 
-            loss = cal_loss(deeplab_model, images, labels)
+            lab = labels.numpy()
+            lab[:, :, :, -1] = 0.
+
+            loss = cal_loss(deeplab_model, images, lab)
 
             tmp_miou = 0.
             for i in range(FLAGS.batch_size):
@@ -142,21 +145,23 @@ def main():
                 #predict = deeplab_model.predict(tf.expand_dims(images[0], 0))
                 predict = tf.argmax(tf.nn.softmax(predict, -1), -1)
                 predict = tf.squeeze(predict, 0)
+                #predict  = tf.one_hot(predict, FLAGS.n_classes)
                 predict = np.array(predict.numpy())
 
                 grounnd_mask = tf.argmax(labels[i], -1)
-                grounnd_mask = np.array(grounnd_mask.numpy()).astype("uint8")
-
+                grounnd_mask = np.array(grounnd_mask.numpy())
+                
                 tmp_miou += compute_miou(grounnd_mask, predict)
+   
 
             total_miou += tmp_miou
             
 
             if count % 10 == 0:
                 print("Epoch = {}[{}/{}] loss = {}".format(epoch, step+1, idx, loss))
-                print("( [{}/{}] images's miou = {} )".format((step + 1) * FLAGS.batch_size, 
-                                                               idx * FLAGS.batch_size, 
-                                                               total_miou / ((step + 1) * FLAGS.batch_size)))
+                #print("( [{}/{}] images's miou = {} )".format((step + 1) * FLAGS.batch_size, 
+                #                                               idx * FLAGS.batch_size, 
+                #                                               total_miou / ((step + 1) * FLAGS.batch_size)))
 
             if count % 100 == 0:
                 output = deeplab_model.predict(tf.expand_dims(images[0], 0))
@@ -174,8 +179,9 @@ def main():
 
             count += 1
 
-        total_miou /= len(tr_img_buf)
-
+        #total_miou /= len(tr_img_buf)
+        print("( {} epoch's miou = {} )".format(epoch + 1,
+                                                total_miou / len(tr_img_buf)))
 
 if __name__ == "__main__":
     main()
